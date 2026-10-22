@@ -26,11 +26,11 @@ lib
  ┣ core
  ┃ ┣ config
  ┃ ┃ ┗ app_config.dart            # константы конфигурации (фаза 2)
- ┃ ┣ logger                       # Talker
+ ┃ ┣ logger                       # Talker, логгеры пакетов, наблюдатель навигации
  ┃ ┣ network
  ┃ ┃ ┣ dio_client.dart
  ┃ ┃ ┗ api_interceptors.dart
- ┃ ┣ storage                      # Hive CE
+ ┃ ┣ storage                      # Hive CE (данные), shared_preferences (настройки)
  ┃ ┗ widgets                      # общие виджеты
  ┣ features
  ┃ ┣ home                         # родительский route
@@ -48,6 +48,9 @@ lib
  ┃   ┗ <feature>.dart             # barrel: страницы и логика, нужные снаружи
  ┗ main.dart
 ```
+
+Один файл — один класс (подробно — «Стиль кода» в SKILL.md): у каждого виджета, Cubit,
+репозитория своё имя файла. Состояния Cubit — в одном файле, мелкие модели фичи — можно в одном.
 
 ## Правила слоёв
 
@@ -81,7 +84,46 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
 4. **DI** — `app/di`, get_it + injectable.
 5. **Логи** — `core/logger`, Talker.
 
-`core/network` (Dio), `core/storage` (Hive) и `core/config` — фаза 2.
+`core/network` (Dio), Hive и `core/config` — фаза 2. `shared_preferences` можно
+с фазы 1 — например, для выбранной темы.
+
+## Корневой виджет — `<app_name>_app.dart`
+
+Образец:
+
+```dart
+class SpendyHolikApp extends StatefulWidget {
+  const SpendyHolikApp({super.key});
+
+  @override
+  State<SpendyHolikApp> createState() => _SpendyHolikAppState();
+}
+
+class _SpendyHolikAppState extends State<SpendyHolikApp> {
+  late final _routerConfig = getIt<AppRouter>().config(
+    navigatorObservers: () => [TalkerAutoRouteObserver(getIt<Talker>())],
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp.router(
+      onGenerateTitle: (context) => context.l10n.appTitle,
+      builder: (_, child) => Material(type: .transparency, child: child),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      localizationsDelegates: AppLocalizationsSetup.delegates,
+      supportedLocales: AppLocalizationsSetup.supportedLocales,
+      localeListResolutionCallback: AppLocalizationsSetup.resolve,
+      routerConfig: _routerConfig,
+    );
+  }
+}
+```
+
+- **`builder: (_, child) => Material(type: .transparency, child: child)` обязателен.**
+  Без `Material` над деревом текст внутри стекла рисуется жёлтым с красным подчёркиванием.
+  Делается **один раз** здесь; в виджетах стекла `Material` не дублируется.
+- Наблюдатель навигации Talker подключается здесь же.
 
 ## Фазы и данные
 
@@ -103,7 +145,9 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
   уступает макету. Цвета макета всё равно заводятся в `AppColors` и схему, не хардкодом.
 - **Шрифты** — из `brief.md`. Подключаются в теме (`textTheme`), не в виджетах.
 - **Жидкое стекло — для шапок и меню**: app bar, нижняя и боковая навигация, меню,
-  выпадающие панели. Контент и карточки — не стекло. Стекло — через `glass_manager.dart`,
+  выпадающие панели. Контент и карточки — не стекло.
+- **Кнопки внутри шапок — тоже стеклянные** (это правило дизайна): обычная кнопка
+  Material в стеклянной шапке — дефект. Стекло — через `glass_manager.dart`,
   который оборачивает `liquid_glass_widgets`; фичи пакет напрямую не используют.
 - `liquid_glass_widgets` используешь **так, как в его документации**. Перед первым
   использованием в проекте прочитай документацию пакета (pub.dev / репозиторий), не по памяти.
@@ -128,8 +172,34 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
 - **intl + gen-l10n.** ARB-файлы в `lib/l10n`, основной язык — по `brief.md`.
 - Все строки UI — из ARB. Захардкоженная строка в виджете — дефект. Числа, даты,
   валюты форматируются через intl с учётом локали.
-- Новый ключ: добавляешь во все ARB, затем просишь пользователя запустить генерацию
-  (`flutter gen-l10n`). Сгенерированные файлы локализации руками не правятся.
+- Новый ключ: добавляешь во все ARB и сразу запускаешь `flutter gen-l10n`.
+  Сгенерированные файлы локализации (`lib/l10n/app_localizations*.dart`) руками
+  не правятся и в git не попадают.
+
+## Хранение настроек — shared_preferences
+
+- Настройки и небольшие пользовательские данные (выбранная тема, язык, флаги онбординга,
+  данные профиля) — `shared_preferences`. Hive — для данных фич и кэша API.
+- Доступ — через обёртку в `core/storage`, зарегистрированную в DI. Фичи
+  `SharedPreferences` напрямую не вызывают, а работают через свой репозиторий.
+- `shared_preferences` не шифруется: токены, пароли и секреты туда не кладутся. Нужно
+  хранить такое — решение с пользователем, в `decisions.md`.
+
+## Логи — Talker
+
+- Логирование только через Talker, `print` и `debugPrint` в коде нет.
+- У пакета есть официальная интеграция с Talker (`talker_dio_logger` для Dio,
+  `talker_bloc_logger` для Bloc) — подключаешь её.
+- У пакета есть свои логи, а официальной интеграции нет (например, `liquid_glass_widgets`) —
+  пишешь **свой адаптер** в `core/logger`, который перенаправляет логи пакета в Talker.
+  Как пакет отдаёт логи — по его документации или исходникам, не по памяти.
+- **Навигация логируется на всех уровнях вложенности**: корневой роутер, вложенные
+  роутеры (`home` и его дети), табы. Наблюдатель (`TalkerAutoRouteObserver`, свой класс
+  в `core/logger` на основе `AutoRouterObserver`) логирует и обычные переходы, и смену
+  табов; как пробросить его во вложенные роутеры — по документации auto_route.
+  Ручная проверка навигации — переход на вложенную страницу и смена таба видны в логе.
+- В Talker не попадают секреты, токены и персональные данные — ни в интерсепторах,
+  ни в тексте ошибок.
 
 ## Конфигурация
 
@@ -169,6 +239,8 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
 | `auto_route` | `app/router` | страницы с `@RoutePage()`, маршруты — в `app_router.dart`, `home` — родительский route |
 | `hive_ce` | `core/storage` | адаптеры — генерацией, не руками |
 | `talker` | `core/logger` | логирование только через него, `print` и `debugPrint` в коде нет |
+| `talker_dio_logger`, `talker_bloc_logger` | `core/logger` | официальные интеграции Talker с Dio и Bloc |
+| `shared_preferences` | `core/storage` | настройки и небольшие данные, через обёртку |
 | `flex_color_scheme` | `app/theme` | схема — по `seedColor` из `AppColors` |
 | `liquid_glass_widgets` | `app/theme/glass_manager.dart` | стекло — через `glass_manager`, не напрямую из фич |
 | `shimmer` | страницы, `core/widgets` | состояние загрузки — скелетон на shimmer, а не голый индикатор |
@@ -176,30 +248,27 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
 | `intl` + gen-l10n | `lib/l10n` | все строки UI из ARB |
 | `flutter_lints` | `analysis_options.yaml` | стандартный набор |
 
-**Логи.** В Talker не попадают секреты, токены и персональные данные — ни в интерсепторах,
-ни в тексте ошибок.
-
 ## Генерация
 
 Генерирующие пакеты: `json_serializable`, `retrofit`, `freezed`, `injectable`,
-`auto_route`, `hive_ce`, плюс локализация (`flutter gen-l10n`). Порядок работы:
+`auto_route`, `hive_ce`, плюс локализация (`flutter gen-l10n`). Генерацию запускает агент:
 
-1. Ты пишешь исходник с аннотациями и `part`-директивами.
-2. Говоришь пользователю: что изменилось, команду, какие файлы должны появиться.
-   Команда обычно одна:
+1. Пишешь исходник с аннотациями и `part`-директивами.
+2. Сразу запускаешь:
    ```
    dart run build_runner build --delete-conflicting-outputs
    ```
-3. Ждёшь подтверждения, дальше работаешь на сгенерированном.
+   (для ARB — `flutter gen-l10n`).
+3. Дальше работаешь на сгенерированном.
 
-`*.g.dart`, `*.freezed.dart`, `*.gr.dart`, `*.config.dart` руками не правятся и вместо
-генератора не пишутся. Ошибка компиляции «нет такого класса» сразу после правки
+`*.g.dart`, `*.freezed.dart`, `*.gr.dart`, `*.config.dart`, `lib/l10n/app_localizations*.dart`
+руками не правятся, вместо генератора не пишутся и **в git не попадают**. Ошибка компиляции «нет такого класса» сразу после правки
 аннотаций — почти всегда незапущенная генерация, а не баг.
 
 ## Тесты
 
 Пакеты: **`bloc_test` + `mocktail`**. `mocktail` выбран, потому что моки без генерации —
-не нужно каждый раз просить пользователя перезапустить `build_runner` ради теста.
+не нужно перезапускать `build_runner` ради каждого нового мока.
 Где мок громоздкий, а поведение простое — ручной fake-класс.
 
 Структура `test/` повторяет `lib/`: `test/features/<x>/data/...`, `test/features/<x>/presentation/...`.
@@ -217,3 +286,68 @@ pages / widgets → cubit → repositories → api (Retrofit) / core/storage (Hi
 
 Не тестируем: сгенерированный код, тему, конфиг роутера, DI-регистрацию, фейковые
 репозитории, внешний вид и стекло — это ручная проверка.
+
+## .gitignore
+
+Шаблон для проекта. **Сгенерированные файлы в git не попадают** — они восстанавливаются
+генерацией после клона (команды — в «Как запускать» в `brief.md`).
+
+```gitignore
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+.vscode/
+
+# Local tooling
+.claude/
+pid
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+docs/pipeline/
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Generated code
+*.g.dart
+*.gr.dart
+*.freezed.dart
+*.config.dart
+lib/l10n/app_localizations*.dart
+```
+
+Новый генерирующий пакет с другим суффиксом файлов — его маска добавляется в раздел
+«Generated code».
